@@ -1,41 +1,30 @@
 # Estimation Calibration CUDA
 
-CUDA PyTorch prototype for learning covariance parameters in a contact-aided right-invariant InEKF. The filter replay is differentiable, so covariance parameters can be optimized with standard Torch training loops instead of a symbolic bilevel solver.
+Torch/CUDA implementation of covariance tuning through differentiable filter replay. A contact-aided right-invariant InEKF is replayed over rollout data in Torch tensors, the covariance parameters are trainable SPD blocks, and training runs truncated BPTT through rollout chunks with a standard Torch optimizer. This is a practical CUDA path for covariance tuning, not the symbolic KKT/Fatrop implementation from the paper.
 
-## Layout
+## Code Path
 
-```text
-cuda/
-├── README.md
-├── pyproject.toml
-├── notebooks/
-│   ├── covariance_tuning_tutorial.ipynb
-│   └── covariance_calibration_run.ipynb
-└── src/estimation_calibration_cuda/
-    ├── __init__.py
-    ├── invariant_ekf.py
-    └── covariance_calibration.py
-```
+- `src/estimation_calibration_cuda/invariant_ekf.py` — right-invariant InEKF replay with dynamic contact insertion/removal, written as a Torch tensor graph so the replay stays differentiable with respect to the process and kinematic measurement covariances. `replay_inekf_torch` runs a full rollout; `start_filter` / `run_rows` / `detach_filter` split the same replay into blocks for truncated BPTT.
+- `src/estimation_calibration_cuda/covariance_calibration.py` — rollout loading from `.npz` files (including the derived contact schedule), SPD covariance modules, the chunked-BPTT training loop with SPD regularization, evaluation, plots, checkpoints, and the CLI.
+- `notebooks/covariance_tuning_tutorial.ipynb` — compact SO(3) example introducing the computation graph and gradient flow.
+- `notebooks/covariance_calibration_run.ipynb` — thin runner around the library code that keeps saved outputs visible; re-running the training cell starts a new run.
 
 ## Environment
 
 This folder is a standalone uv project.
-
-CUDA PyTorch environment:
 
 ```bash
 cd cuda
 uv sync --extra cu130 --extra notebooks
 ```
 
-CPU-only inspection environment:
+CPU inspection:
 
 ```bash
-cd cuda
 uv sync --extra cpu --extra notebooks
 ```
 
-Verify Torch:
+Torch check:
 
 ```bash
 uv run python - <<'PY'
@@ -45,24 +34,9 @@ print("cuda:", torch.cuda.is_available())
 PY
 ```
 
-The training path expects CUDA float64. CPU mode is useful for reading notebooks, inspecting saved JSON, and lightweight imports.
+The training path expects CUDA float64. CPU mode is mainly for imports, reading notebooks, and inspecting saved outputs.
 
-## Notebooks
-
-- `notebooks/covariance_tuning_tutorial.ipynb` is a small SO(3) toy tutorial that shows end-to-end differentiable covariance tuning with Adam and SGD.
-- `notebooks/covariance_calibration_run.ipynb` is the larger calibration notebook for real rollout datasets.
-
-## Rerun Training
-
-Provide the raw dataset directory and run:
-
-```bash
-uv run estimation-calibration-cuda train \
-  --data-root /path/to/datasets_v0 \
-  --outputs runs/covariance_calibration
-```
-
-Expected dataset files:
+## Data
 
 ```text
 datasets_v0/
@@ -71,4 +45,26 @@ datasets_v0/
 └── <rollout>.features.npz
 ```
 
-Training writes calibrated covariances, a checkpoint, plots, and JSON summaries under the selected output directory.
+The `.npz` file carries IMU, ground truth, and timing; the `.features.npz` file carries the candidate foot kinematics used for measurements and the contact schedule.
+
+## Run
+
+```bash
+uv run estimation-calibration-cuda train \
+  --data-root /path/to/datasets_v0 \
+  --outputs runs/covariance_calibration \
+  --epochs 20 \
+  --chunk 300 \
+  --lr 1e-2
+```
+
+Summarize an existing output directory without touching the GPU:
+
+```bash
+uv run estimation-calibration-cuda summarize \
+  --outputs runs/covariance_calibration
+```
+
+## Outputs
+
+Training writes `calibrated_covariances.npz` and `initial_covariances.npz`, `calibration_checkpoint.pt`, `full_spd_training_log.json` and `full_spd_eval_summary.json`, and a `plots/` directory with training-curve, eigenvalue, condition-number, correlation, and NIS diagnostics.
