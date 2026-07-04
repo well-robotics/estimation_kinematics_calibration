@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "estimation-calibration-cuda"
+version = "0.1.0"
+description = "CUDA PyTorch estimation covariance calibration for contact-aided invariant EKF replay."
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+  "numpy>=1.24",
+  "matplotlib>=3.7"
+]
+
+[project.optional-dependencies]
+cpu = [
+  "torch>=2.11.0"
+]
+cu130 = [
+  "torch>=2.11.0"
+]
+notebooks = [
+  "ipykernel>=6",
+  "jupyterlab>=4"
+]
+
+[project.scripts]
+estimation-calibration-cuda = "estimation_calibration_cuda.covariance_calibration:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cu130" }
+  ]
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu130", extra = "cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

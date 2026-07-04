@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+
+casadi_cache/
+.cache/
+outputs/
+theta_history.csv
+cur_*.png
+start_*.csv
+end_*.csv

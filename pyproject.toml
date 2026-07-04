@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "estimation-calibration"
+version = "0.1.0"
+description = "Estimation covariance and kinematic calibration for legged robot state estimation."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Denglin Cheng" }
+]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "matplotlib>=3.7",
+  "casadi>=3.6",
+  "cvxpy>=1.4",
+  "pypardiso>=0.4"
+]
+
+[project.optional-dependencies]
+robotics = [
+  "pin>=2.6"
+]
+
+[project.scripts]
+estimation-calibration = "bilevel.run_bilevel:main"
+
+[tool.setuptools]
+package-dir = {"" = "src/python"}
+
+[tool.setuptools.packages.find]
+where = ["src/python"]
