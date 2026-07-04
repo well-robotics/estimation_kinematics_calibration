@@ -10,7 +10,6 @@ cuda/
 ├── pyproject.toml
 ├── notebooks/
 │   ├── covariance_tuning_tutorial.ipynb
-│   ├── covariance_calibration_playground.ipynb
 │   └── covariance_calibration_run.ipynb
 └── src/estimation_calibration_cuda/
     ├── __init__.py
@@ -51,7 +50,6 @@ The training path expects CUDA float64. CPU mode is useful for reading notebooks
 ## Notebooks
 
 - `notebooks/covariance_tuning_tutorial.ipynb` is a small SO(3) toy tutorial that shows end-to-end differentiable covariance tuning with Adam and SGD.
-- `notebooks/covariance_calibration_playground.ipynb` is self-contained. It builds a Torch estimator, starts with bad covariance matrices, and trains them on synthetic data.
 - `notebooks/covariance_calibration_run.ipynb` is the larger calibration notebook for real rollout datasets.
 
 ## Rerun Training
