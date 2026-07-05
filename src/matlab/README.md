@@ -34,4 +34,11 @@ Written to the output directory from `calibrationOptions.m` (default `outputs/ma
 
 ## Dependencies
 
-MATLAB, CasADi with IPOPT, YALMIP, and MOSEK or another YALMIP-compatible SDP solver. Add external dependencies to the MATLAB path before running.
+Required external dependencies:
+
+- MATLAB
+- CasADi with IPOPT
+- qpOASES
+- YALMIP
+- MOSEK or another YALMIP-compatible SDP solver
+- [STRIDE MATLAB software](https://github.com/well-robotics/STRIDE/tree/main/Software/Matlab), required for the default robot model and kinematics functions used by this MATLAB implementation. See also the [STRIDE paper](https://arxiv.org/abs/2407.02648).
