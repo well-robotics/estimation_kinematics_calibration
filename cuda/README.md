@@ -1,74 +1,120 @@
 # Estimation Calibration CUDA
 
-Torch/CUDA implementation of covariance tuning through differentiable filter replay. A contact-aided right-invariant InEKF is replayed over rollout data in Torch tensors, the covariance parameters are trainable SPD blocks, and training runs truncated BPTT through rollout chunks with a standard Torch optimizer. This is a practical CUDA path for covariance tuning, not the symbolic KKT/Fatrop implementation from the paper.
+Differentiable Torch/CUDA covariance calibration for a contact-aided
+right-invariant EKF on Unitree G1 data. The filter replay is unrolled through
+time, covariance blocks are trainable SPD parameters, and training uses
+chunked BPTT.
 
-## Estimator
+Scope: the default run uses all 7 rollouts for calibration. The reported
+metrics are in-sample calibration metrics, not held-out generalization.
 
-This CUDA implementation uses the contact-aided invariant EKF estimator from Hartley et al. (2020) on Unitree G1. For estimator details, see “Contact-aided invariant extended Kalman filtering for robot state estimation”: https://doi.org/10.1177/0278364919894385
+## Lineage
 
-## Code Path
+This implementation follows the computation-graph view of
+[Backprop KF](https://dl.acm.org/doi/10.5555/3157382.3157587) and the legged
+robot contact-aided InEKF setting of
+[Lin et al., CoRL/PMLR 2022](https://proceedings.mlr.press/v164/lin22b.html).
+This release does not include a learned contact-event network; contact
+schedules come from provided features, and the learned parameters are
+covariance blocks.
 
-- `src/estimation_calibration_cuda/invariant_ekf.py` — right-invariant InEKF replay with dynamic contact insertion/removal, written as a Torch tensor graph so the replay stays differentiable with respect to the process and kinematic measurement covariances. `replay_inekf_torch` runs a full rollout; `start_filter` / `run_rows` / `detach_filter` split the same replay into blocks for truncated BPTT.
-- `src/estimation_calibration_cuda/covariance_calibration.py` — rollout loading from `.npz` files (including the derived contact schedule), SPD covariance modules, the chunked-BPTT training loop with SPD regularization, evaluation, plots, checkpoints, and the CLI.
-- `notebooks/covariance_tuning_tutorial.ipynb` — compact SO(3) example introducing the computation graph and gradient flow.
-- `notebooks/covariance_calibration_run.ipynb` — thin runner around the library code that keeps saved outputs visible; re-running the training cell starts a new run.
+## Code Map
+
+- `src/estimation_calibration_cuda/invariant_ekf.py`: original dynamic filter,
+  kept as the parity oracle and `--exec sequential` reference.
+- `src/estimation_calibration_cuda/fixed_slot_inekf.py`: static-shape,
+  fixed-slot, batched fast path.
+- `src/estimation_calibration_cuda/batched_calibration.py`: batched trainer,
+  batched eval, and whole-chunk CUDA graph capture.
+- `src/estimation_calibration_cuda/covariance_calibration.py`: data loading,
+  covariance modules, sequential trainer, CLI.
+- `benchmarks/profile_replay.py`: profiler and benchmark harness.
+- `tests/`: parity, gradient, graph, padding, batching, and smoke tests.
+- `docs/gpu_execution_playbook.md`: concise GPU execution notes for future
+  estimator changes.
 
 ## Environment
 
-This folder is a standalone uv project.
+Default local reproduction path is the existing miniforge `legged_opt`
+environment:
 
 ```bash
-cd cuda
-uv sync --extra cu130 --extra notebooks
+cd /home/dlc/GitHub/LegBiCal/cuda
+/home/dlc/miniforge3/envs/legged_opt/bin/python -c \
+  "import torch; print(torch.__version__, torch.cuda.is_available(), torch.version.cuda)"
 ```
 
-CPU inspection:
+`pyproject.toml` also supports uv as a fallback dependency record:
 
 ```bash
-uv sync --extra cpu --extra notebooks
+uv sync --extra cu130 --extra notebooks --extra dev
 ```
 
-Torch check:
-
-```bash
-uv run python - <<'PY'
-import torch
-print(torch.__version__)
-print("cuda:", torch.cuda.is_available())
-PY
-```
-
-The training path expects CUDA float64. CPU mode is mainly for imports, reading notebooks, and inspecting saved outputs.
+The training path expects CUDA float64.
 
 ## Data
 
+Expected dataset root:
+
 ```text
-datasets_v0/
-├── dataset_manifest.json
-├── <rollout>.npz
-└── <rollout>.features.npz
+/home/dlc/projects/Estimation-Calibration/data/datasets_v0
 ```
 
-The `.npz` file carries IMU, ground truth, and timing; the `.features.npz` file carries the candidate foot kinematics used for measurements and the contact schedule.
+Each rollout has `<stem>.npz` and `<stem>.features.npz`; the manifest is
+`dataset_manifest.json`.
 
 ## Run
 
 ```bash
-uv run estimation-calibration-cuda train \
-  --data-root /path/to/datasets_v0 \
+PYTHONPATH=src /home/dlc/miniforge3/envs/legged_opt/bin/python \
+  -m estimation_calibration_cuda.covariance_calibration train \
+  --data-root /home/dlc/projects/Estimation-Calibration/data/datasets_v0 \
   --outputs runs/covariance_calibration \
-  --epochs 20 \
-  --chunk 300 \
-  --lr 1e-2
+  --epochs 20
 ```
 
-Summarize an existing output directory without touching the GPU:
+Defaults are `--exec batched --compile cuda-graph`. Use `--exec sequential`
+for the original dynamic-dimension reference path.
+
+## Test And Profile
 
 ```bash
-uv run estimation-calibration-cuda summarize \
-  --outputs runs/covariance_calibration
+PYTHONPATH=src /home/dlc/miniforge3/envs/legged_opt/bin/python -m pytest tests/
+
+PYTHONPATH=src /home/dlc/miniforge3/envs/legged_opt/bin/python \
+  benchmarks/profile_replay.py --impl fixed --batch 7 --rows 300 --chunks 10 \
+  --with-grad --compile cuda-graph --trace
 ```
+
+## GPU Execution Summary
+
+The original CUDA replay was launch-bound: dynamic state dimension, per-row
+Python control flow, tiny matrix kernels, and hidden device-to-host syncs. The
+fast path uses fixed contact slots, masks, batched rollouts, and one CUDA graph
+replay per 300-row chunk.
+
+| path | fwd+bwd | throughput | launches/row |
+|---|---:|---:|---:|
+| dynamic baseline | 6.33 ms/step | 158 rows/s | 1262 |
+| fixed-slot + chunk CUDA graph | 1.57 ms/step | 4451 rows/s | 0.03 |
+
+Full 20-epoch calibration: 82 min sequential reference to 8.0 min batched
+CUDA graph. Aggregate calibrated vB RMSE: 1.73 vs 1.70 sequential reference.
+
+Future estimator contract:
+
+```python
+schedule = build_schedule(host_metadata)
+carry = init_carry(seed, batch)
+carry, out = step(carry, inputs[:, t], schedule[:, t], params)
+```
+
+Keep the hot path tensor-only, batch-first, static-shape, and free of
+data-dependent Python branching.
 
 ## Outputs
 
-Training writes `calibrated_covariances.npz` and `initial_covariances.npz`, `calibration_checkpoint.pt`, `full_spd_training_log.json` and `full_spd_eval_summary.json`, and a `plots/` directory with training-curve, eigenvalue, condition-number, correlation, and NIS diagnostics.
+Training writes `initial_covariances.npz`, `calibrated_covariances.npz`,
+`calibration_checkpoint.pt`, `full_spd_training_log.json`,
+`full_spd_eval_summary.json`, and diagnostic plots under the selected output
+directory.
