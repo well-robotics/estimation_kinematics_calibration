@@ -61,7 +61,15 @@ MAX_LOG_COND = 6.0
 
 @dataclass(frozen=True)
 class CalibrationConfig:
-    """Training configuration."""
+    """Training configuration.
+
+    exec_mode "batched" runs all rollouts as one fixed-slot batch with one
+    Adam step per synchronized chunk (the fast path); "sequential" is the
+    original per-rollout dynamic-dimension loop kept as a reference for
+    training-dynamics comparisons. compile_mode None runs the batched step
+    eagerly; "default"/"reduce-overhead"/"max-autotune" pass through to
+    torch.compile(step, fullgraph=True).
+    """
 
     trim_s: float = 1.0
     s_jitter: float = 1e-12
@@ -72,6 +80,8 @@ class CalibrationConfig:
     bias_lr_factor: float = 1.0 / 30.0
     dtype: torch.dtype = torch.float64
     require_cuda: bool = True
+    exec_mode: str = "batched"
+    compile_mode: str | None = None
 
 
 @dataclass
@@ -821,7 +831,11 @@ def _cmd_summarize(args: argparse.Namespace) -> None:
 
 
 def _cmd_train(args: argparse.Namespace) -> None:
-    config = CalibrationConfig(epochs=args.epochs, chunk=args.chunk, lr=args.lr)
+    config = CalibrationConfig(
+        epochs=args.epochs, chunk=args.chunk, lr=args.lr,
+        exec_mode=args.exec_mode,
+        compile_mode=None if args.compile_mode == "none" else args.compile_mode,
+    )
     device = make_device(config.require_cuda)
     torch.set_default_dtype(config.dtype)
     data_root = Path(args.data_root)
@@ -832,7 +846,11 @@ def _cmd_train(args: argparse.Namespace) -> None:
         covs0, Rk0 = build_covs(modules0)
         covs0 = {k: v.detach().clone() for k, v in covs0.items()}
         Rk0 = Rk0.detach().clone()
-    result = train_trimmed_rollouts(rollout_order, rollouts, config=config, device=device)
+    if config.exec_mode == "batched":
+        from .batched_calibration import train_batched
+        result = train_batched(rollout_order, rollouts, config=config, device=device)
+    else:
+        result = train_trimmed_rollouts(rollout_order, rollouts, config=config, device=device)
     device_name = torch.cuda.get_device_name(0)
     save_training_outputs(
         out_dir,
@@ -848,7 +866,11 @@ def _cmd_train(args: argparse.Namespace) -> None:
     covs_cal, Rk_cal = build_covs(result.modules)
     save_covariances_npz(out_dir / "calibrated_covariances.npz", covs_cal, Rk_cal)
     P0_fixed = fixed_initial_covariance(device, config.dtype)
-    evaluation = evaluate_all(
+    if config.exec_mode == "batched":
+        from .batched_calibration import evaluate_all_batched as _eval_all
+    else:
+        _eval_all = evaluate_all
+    evaluation = _eval_all(
         rollout_order,
         rollouts,
         covs_initial=covs0,
@@ -903,6 +925,15 @@ def main(argv: list[str] | None = None) -> None:
     train.add_argument("--epochs", type=int, default=20)
     train.add_argument("--chunk", type=int, default=300)
     train.add_argument("--lr", type=float, default=1e-2)
+    train.add_argument("--exec", dest="exec_mode", default="batched",
+                       choices=["batched", "sequential"],
+                       help="batched fixed-slot filter (fast) or the original "
+                            "per-rollout dynamic-dimension loop")
+    train.add_argument("--compile", dest="compile_mode", default="cuda-graph",
+                       choices=["none", "default", "reduce-overhead",
+                                "max-autotune", "cuda-graph"],
+                       help="step execution for the batched path; cuda-graph "
+                            "captures each whole chunk fwd+bwd (fastest)")
     train.set_defaults(func=_cmd_train)
     args = parser.parse_args(argv)
     args.func(args)
