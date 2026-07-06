@@ -92,6 +92,9 @@ replay per 300-row chunk.
 
 Full 20-epoch calibration: 82 min sequential reference to 8.0 min batched
 CUDA graph. Aggregate calibrated vB RMSE: 1.73 vs 1.70 sequential reference.
+Notebook run: 1,469,080 supervised BPTT time steps in 7.34 min
+(3,337 steps/s), vB RMSE 1.9398 -> 1.7324; see
+[`notebooks/covariance_calibration_run.ipynb`](notebooks/covariance_calibration_run.ipynb).
 
 Future estimator contract:
 
