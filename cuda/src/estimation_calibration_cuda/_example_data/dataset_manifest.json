@@ -1,0 +1,26 @@
+{
+  "schema_version": "estimation-calibration-dataset-v1",
+  "episodes": [
+    {
+      "name": "synthetic-train",
+      "split": "train",
+      "source_id": "synthetic-recording-train",
+      "file": "train.npz",
+      "sha256": "a42cdcb34a1583fd4226bd42bf089636c3620c2280b2bdac0e1c60e98de5c6e3"
+    },
+    {
+      "name": "synthetic-validation",
+      "split": "validation",
+      "source_id": "synthetic-recording-validation",
+      "file": "validation.npz",
+      "sha256": "561a1e594ffb8478011cca0f6bf4cbb5c84be51c66b2eee188aa4efbaba7272a"
+    },
+    {
+      "name": "synthetic-test",
+      "split": "test",
+      "source_id": "synthetic-recording-test",
+      "file": "test.npz",
+      "sha256": "5172231766582d07e42ea0ecad726a42ce00383ef65341f76944073ffe537f7a"
+    }
+  ]
+}
