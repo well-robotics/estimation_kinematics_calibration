@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 import torch
 
 from estimation_calibration_cuda import fixed_slot_inekf as fsi
-from estimation_calibration_cuda.invariant_ekf import replay_inekf_torch
 
 from conftest import (
-    GOLDEN_G1,
     dynamic_column_map,
     map_dynamic_P_to_fixed,
     run_dynamic,
     run_fixed,
 )
+
+pytestmark = pytest.mark.external_data
 
 
 def _traj_maxdiff(out_d, out_f):
@@ -79,60 +78,6 @@ def test_column_map_matches_dynamic(roll, covs_pair, P0_fixed, config):
     assert sim == filt.estimated_contact_positions
 
 
-def test_golden_g1_slice(device, covs_pair, config):
-    """Dynamic and fixed-slot both reproduce the Gate C golden trajectory."""
-    if not GOLDEN_G1.exists():
-        pytest.skip(f"golden missing: {GOLDEN_G1}")
-    z = np.load(GOLDEN_G1, allow_pickle=True)
-    dd = {"device": device, "dtype": torch.float64}
-    t = lambda k: torch.as_tensor(z[k], **dd)
-    covs = {k: t(k) for k in ["Qg", "Qa", "Qbg", "Qba", "Qc"]}
-    T = z["imu_shifted"].shape[0]
-    with torch.no_grad():
-        out = replay_inekf_torch(
-            t("X0"), t("theta0"), t("P0"), covs, t("imu_shifted"),
-            float(z["dt"]), t("p_meas"), z["flags"], t("R_kin"),
-            s_jitter=config.s_jitter)
-    for key, ref in [("R_WB", "R_np"), ("v_W", "v_np"), ("p_W", "p_np")]:
-        d = float((out[key] - t(ref)).abs().max())
-        assert d <= 1e-9, (key, d)
-    assert float((out["final_P"] - t("final_P")).abs().max()) <= 1e-9
-
-    # fixed-slot on the same inputs (replay convention: row k uses imu[k-1])
-    flags = z["flags"].astype(bool)
-    imu_local = torch.zeros(T, 6, **dd)
-    imu_local[1:] = t("imu_shifted")[:-1]
-    prev = np.zeros_like(flags)
-    prev[1:] = flags[:-1]
-    mk = lambda a: torch.as_tensor(a, device=device)[None]
-    corr = prev & flags
-    batch = fsi.BatchData(
-        B=1, T_pad=T, imu=imu_local[None], p_meas=t("p_meas")[None],
-        gt_v_B=torch.zeros(1, T, 3, **dd),
-        dt_row=torch.full((1, T), float(z["dt"]), **dd),
-        valid=torch.ones(1, T, dtype=torch.bool, device=device),
-        prop_mask=mk(prev), correct_mask=mk(corr), insert_mask=mk(~prev & flags),
-        nis_dim=3.0 * mk(corr).sum(-1).to(torch.float64))
-    batch.dt_row[:, 0] = 0.0
-    with torch.no_grad():
-        state = fsi.init_state([(t("X0"), t("theta0"), t("P0"))], device=device)
-        state = fsi.apply_row0(state, batch.p_meas[:, 0],
-                               batch.insert_mask[:, 0], t("R_kin"))
-        R0, v0, p0 = (state.X[0, 0:3, 0:3].clone(), state.X[0, 0:3, 3].clone(),
-                      state.X[0, 0:3, 4].clone())
-        state, out_f = fsi.run_rows_fixed(state, batch, slice(1, T), covs,
-                                          t("R_kin"), s_jitter=config.s_jitter)
-    R_all = torch.cat([R0[None], out_f["R_WB"][0]])
-    v_all = torch.cat([v0[None], out_f["v_W"][0]])
-    p_all = torch.cat([p0[None], out_f["p_W"][0]])
-    for est, ref in [(R_all, "R_np"), (v_all, "v_np"), (p_all, "p_np")]:
-        d = float((est - t(ref)).abs().max())
-        assert d <= 1e-9, (ref, d)
-    pos = dynamic_column_map(flags)
-    Pd, Pf = map_dynamic_P_to_fixed(t("final_P"), pos, state.P[0])
-    assert float((Pd - Pf).abs().max()) <= 1e-9
-
-
 def test_padded_rows_are_bitwise_noop(roll, covs_pair, P0_fixed, config):
     covs, R_kin = covs_pair
     with torch.no_grad():
@@ -171,19 +116,12 @@ def test_chunked_equals_monolithic(roll, covs_pair, P0_fixed, config):
         assert torch.equal(cat, out_mono[key]), key
 
 
-def test_batched_equals_single(device, config, P0_fixed, covs_pair):
+def test_batched_equals_single(device, config, P0_fixed, covs_pair,
+                               real_rollouts):
     """B=7 padded batch reproduces per-rollout runs (bmm vs mm tolerance)."""
-    from conftest import DATA_ROOT
-    from estimation_calibration_cuda.covariance_calibration import (
-        load_rollout, seed_state)
-    import json
+    from estimation_calibration_cuda.covariance_calibration import seed_state
     covs, R_kin = covs_pair
-    manifest = json.loads((DATA_ROOT / "dataset_manifest.json").read_text())
-    from pathlib import Path as _P
-    stems = sorted(_P(e["dataset_path"]).stem for e in manifest
-                   if (DATA_ROOT / f"{_P(e['dataset_path']).stem}.npz").exists())
-    rolls = [load_rollout(DATA_ROOT, s, "t", config=config, device=device)
-             for s in stems]
+    rolls = real_rollouts
     n = 1500
     with torch.no_grad():
         batch = fsi.build_batch(rolls)

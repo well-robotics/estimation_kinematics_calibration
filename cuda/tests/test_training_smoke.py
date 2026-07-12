@@ -24,6 +24,8 @@ from estimation_calibration_cuda.covariance_calibration import (
 
 from conftest import run_fixed
 
+pytestmark = pytest.mark.external_data
+
 
 def _truncated(roll, rows=1500):
     """A shortened copy of the rollout for fast training epochs."""

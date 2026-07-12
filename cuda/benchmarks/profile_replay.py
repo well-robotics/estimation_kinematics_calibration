@@ -9,7 +9,10 @@ stream synchronizations, and D2H/H2D copies parsed from the trace.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import platform
+import subprocess
 import time
 from pathlib import Path
 
@@ -30,9 +33,15 @@ from estimation_calibration_cuda.invariant_ekf import (
     run_rows,
     start_filter,
 )
+from estimation_calibration_cuda.data_paths import leg_bical_data_root
 
-DATA_ROOT = Path("/home/dlc/projects/Estimation-Calibration/data/datasets_v0")
+DATA_ROOT = leg_bical_data_root()
 DEFAULT_STEM = "dance1_subject1_20260623_173019"
+BENCHMARK_SCRIPT = "cuda/benchmarks/profile_replay.py"
+BUNDLE_HASH_RULE = (
+    "sha256 of the LC_ALL=C filename-sorted sha256sum lines for "
+    "dataset_manifest.json and all fourteen *.npz files"
+)
 
 LAUNCH_EVENTS = {"cudaLaunchKernel", "cuLaunchKernel", "cudaLaunchKernelExC"}
 GRAPH_LAUNCH_EVENTS = {"cudaGraphLaunch", "cuGraphLaunch"}
@@ -44,6 +53,109 @@ SYNC_EVENTS = {
     "cudaStreamSynchronize", "cudaDeviceSynchronize", "cudaEventSynchronize",
     "cudaMemcpyAsync",  # counted separately below, kept here for visibility
 }
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _data_identity(data_root: Path) -> dict[str, str]:
+    manifest = data_root / "dataset_manifest.json"
+    archives = sorted(data_root.glob("*.npz"), key=lambda path: path.name)
+    if not manifest.is_file() or len(archives) != 14:
+        raise ValueError("benchmark data must contain one manifest and 14 NPZ files")
+    files = sorted([manifest, *archives], key=lambda path: path.name)
+    checksum_lines = "".join(
+        f"{_sha256(path)}  {path.name}\n" for path in files
+    ).encode()
+    return {
+        "manifest_sha256": _sha256(manifest),
+        "bundle_sha256": hashlib.sha256(checksum_lines).hexdigest(),
+        "bundle_hash_rule": BUNDLE_HASH_RULE,
+    }
+
+
+def _git_commit() -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
+
+
+def _driver_version() -> str:
+    output = subprocess.check_output(
+        ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+        text=True,
+    )
+    return output.splitlines()[0].strip()
+
+
+def _environment() -> dict[str, object]:
+    return {
+        "python": platform.python_version(),
+        "torch": torch.__version__,
+        "cuda_runtime": torch.version.cuda,
+        "nvidia_driver": _driver_version(),
+        "gpu": torch.cuda.get_device_name(0),
+        "compute_capability": list(torch.cuda.get_device_capability(0)),
+    }
+
+
+def _sanitized_command(args) -> str:
+    parts = [
+        "PYTHONPATH=src", "PYTHON", "benchmarks/profile_replay.py",
+        "--impl", args.impl,
+        "--batch", str(args.batch),
+        "--rows", str(args.rows),
+        "--chunks", str(args.chunks),
+        "--repeat", str(args.repeat),
+    ]
+    if args.with_grad:
+        parts.append("--with-grad")
+    parts.extend(["--compile", args.compile_mode])
+    if args.dtype != "float64":
+        parts.extend(["--dtype", args.dtype])
+    if args.trace:
+        parts.append("--trace")
+    if args.stem != DEFAULT_STEM:
+        parts.extend(["--stem", args.stem])
+    parts.extend(["--data-root", "DATA_ROOT", "--out", "OUT"])
+    return " ".join(parts)
+
+
+def _write_summary(args, batch: int, measurements: dict[str, object]) -> None:
+    tag = f"{args.impl}_b{batch}_c{args.compile_mode}_{args.dtype}_" \
+          f"{'grad' if args.with_grad else 'fwd'}"
+    document = {
+        "schema_version": 1,
+        "role": "candidate",
+        "commit": _git_commit(),
+        "benchmark_script": BENCHMARK_SCRIPT,
+        "benchmark_script_sha256": _sha256(Path(__file__)),
+        "command": _sanitized_command(args),
+        "data": _data_identity(args.data_root),
+        "environment": _environment(),
+        "protocol": {
+            "tag": tag,
+            "impl": args.impl,
+            "dtype": args.dtype,
+            "with_grad": args.with_grad,
+            "compile_mode": args.compile_mode,
+            "batch": batch,
+            "rows": args.rows,
+            "chunks": args.chunks,
+            "repeats": args.repeat,
+            "warmup_excluded": True,
+        },
+        "measurements": measurements,
+    }
+    payload = json.dumps(document, indent=2, allow_nan=False)
+    print(payload)
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / f"{tag}.summary.json").write_text(payload + "\n")
 
 
 def load_manifest_stems(data_root: Path) -> list[str]:
@@ -165,15 +277,14 @@ def _median_stats(wall_times: list[float], rows: int, chunks: int,
                   batch: int) -> dict:
     """median/min/max ms_per_step and rows_per_s over repeated timed passes."""
     n_rows = rows * chunks
-    ms = sorted(1e3 * dt / n_rows for dt in wall_times)
-    med = float(np.median(ms))
+    samples = [1e3 * elapsed / n_rows for elapsed in wall_times]
+    med = float(np.median(samples))
     return {
-        "repeats": len(ms),
+        "ms_per_step_samples": samples,
         "ms_per_step": med,
-        "ms_per_step_min": ms[0],
-        "ms_per_step_max": ms[-1],
+        "ms_per_step_min": min(samples),
+        "ms_per_step_max": max(samples),
         "rows_per_s": 1e3 * batch / med,
-        "batch": batch,
         "wall_s": sum(wall_times),
     }
 
@@ -256,7 +367,7 @@ def parse_trace(trace_path: Path, rows: int, chunks: int = 1) -> dict:
         elif cat == "cuda_runtime":
             cpu_op_time_us += e.get("dur", 0)
     return {
-        "trace": str(trace_path),
+        "trace": trace_path.name,
         "rows_profiled": rows,
         "launches_per_row": launches / rows,
         "graph_launches_per_chunk": graph_launches / chunks,
@@ -306,22 +417,24 @@ def run_cuda_graph_bench(args, modules, params, config, P0_fixed, device):
             graph.replay_chunk(1 + (i % 3) * args.rows)
         torch.cuda.synchronize()
         wall_times.append(time.perf_counter() - t0)
-    tag = f"fixed_b{batch.B}_c{args.compile_mode}_float64_grad"
-    result = {"tag": tag, "rows": args.rows, "chunks": args.chunks}
-    result.update(_median_stats(wall_times, args.rows, args.chunks, batch.B))
-    result["peak_gb"] = torch.cuda.max_memory_allocated() / 1e9
+    measurements = _median_stats(
+        wall_times, args.rows, args.chunks, batch.B
+    )
+    measurements["peak_gb"] = torch.cuda.max_memory_allocated() / 1e9
     if args.trace:
         from torch.profiler import ProfilerActivity, profile
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
             graph.replay_chunk(1)
             torch.cuda.synchronize()
-        trace_path = args.out / f"{tag}.json"
+        trace_path = args.out / (
+            f"fixed_b{batch.B}_c{args.compile_mode}_float64_grad.json"
+        )
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         prof.export_chrome_trace(str(trace_path))
-        result.update(parse_trace(trace_path, args.rows, chunks=1))
-    print(json.dumps(result, indent=2))
-    args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / f"{tag}.summary.json").write_text(json.dumps(result, indent=2))
+        measurements["profile"] = parse_trace(
+            trace_path, args.rows, chunks=1
+        )
+    _write_summary(args, batch.B, measurements)
 
 
 def main() -> None:
@@ -339,11 +452,16 @@ def main() -> None:
     ap.add_argument("--with-grad", action="store_true")
     ap.add_argument("--trace", action="store_true", help="export chrome trace")
     ap.add_argument("--dtype", choices=["float64", "float32"], default="float64")
-    ap.add_argument("--data-root", type=Path, default=DATA_ROOT)
+    ap.add_argument(
+        "--data-root", type=Path, default=DATA_ROOT,
+        help="dataset root (default: LEG_BICAL_DATA_ROOT)",
+    )
     ap.add_argument("--stem", default=DEFAULT_STEM)
     ap.add_argument("--out", type=Path, default=Path("runs/profiles"))
     args = ap.parse_args()
 
+    if args.data_root is None:
+        ap.error("pass --data-root or set LEG_BICAL_DATA_ROOT")
     assert torch.cuda.is_available(), "CUDA required"
     device = torch.device("cuda")
     dtype = {"float64": torch.float64, "float32": torch.float32}[args.dtype]
@@ -369,18 +487,20 @@ def main() -> None:
                              None if args.compile_mode == "none" else args.compile_mode,
                              dtype)
 
-    tag = (f"{args.impl}_b{args.batch}_c{args.compile_mode}_{args.dtype}"
-           f"_{'grad' if args.with_grad else 'fwd'}")
-    result = {"tag": tag, "rows": args.rows, "chunks": args.chunks}
-    result.update(timed(runner, args.rows, args.chunks, args.with_grad, params,
-                        repeat=args.repeat))
+    measurements = timed(
+        runner, args.rows, args.chunks, args.with_grad, params,
+        repeat=args.repeat,
+    )
     if args.trace:
         trace_rows = min(args.rows, 100)
-        result.update(profile_trace(runner, trace_rows, args.with_grad, params,
-                                    args.out / f"{tag}.json"))
-    print(json.dumps(result, indent=2))
-    args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / f"{tag}.summary.json").write_text(json.dumps(result, indent=2))
+        tag = f"{args.impl}_b{args.batch}_c{args.compile_mode}_{args.dtype}_" \
+              f"{'grad' if args.with_grad else 'fwd'}"
+        measurements["profile"] = profile_trace(
+            runner, trace_rows, args.with_grad, params,
+            args.out / f"{tag}.json",
+        )
+    batch = getattr(getattr(runner, "batch", None), "B", 1)
+    _write_summary(args, batch, measurements)
 
 
 if __name__ == "__main__":

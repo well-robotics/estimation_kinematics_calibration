@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -18,11 +19,14 @@ from estimation_calibration_cuda.covariance_calibration import (
 )
 from estimation_calibration_cuda.invariant_ekf import run_rows, start_filter
 from estimation_calibration_cuda import fixed_slot_inekf as fsi
+from estimation_calibration_cuda.data_paths import (
+    leg_bical_data_root,
+)
 
-DATA_ROOT = Path("/home/dlc/projects/Estimation-Calibration/data/datasets_v0")
-GOLDEN_G1 = Path(
-    "/home/dlc/projects/Estimation-Calibration/outputs/covariance_calibration"
-    "/gate_c_golden_g1_slice.npz")
+DATA_ROOT = leg_bical_data_root()
+SYNTHETIC_GOLDEN = (
+    Path(__file__).resolve().parent / "data" / "legacy_synthetic_mini_golden.npz"
+)
 STEM = "dance1_subject1_20260623_173019"
 
 requires_cuda = pytest.mark.skipif(
@@ -42,10 +46,51 @@ def config():
 
 
 @pytest.fixture(scope="session")
-def roll(device, config):
-    if not DATA_ROOT.exists():
-        pytest.skip(f"data root missing: {DATA_ROOT}")
-    return load_rollout(DATA_ROOT, STEM, "test", config=config, device=device)
+def real_data_root():
+    if DATA_ROOT is None or not DATA_ROOT.is_dir():
+        pytest.skip("external data not configured")
+    manifest = DATA_ROOT / "dataset_manifest.json"
+    if not manifest.is_file():
+        pytest.fail("configured data root has no dataset_manifest.json")
+    return DATA_ROOT
+
+
+@pytest.fixture(scope="session")
+def roll(device, config, real_data_root):
+    required = [
+        real_data_root / f"{STEM}.npz",
+        real_data_root / f"{STEM}.features.npz",
+    ]
+    if any(not path.is_file() for path in required):
+        pytest.fail(f"configured data root has no complete pair for {STEM}")
+    return load_rollout(real_data_root, STEM, "test", config=config,
+                        device=device)
+
+
+@pytest.fixture(scope="session")
+def real_rollouts(device, config, real_data_root):
+    manifest = json.loads((real_data_root / "dataset_manifest.json").read_text())
+    stems = sorted({Path(entry["dataset_path"]).stem for entry in manifest})
+    incomplete = [
+        stem for stem in stems
+        if not (real_data_root / f"{stem}.npz").is_file()
+        or not (real_data_root / f"{stem}.features.npz").is_file()
+    ]
+    if incomplete:
+        pytest.fail("configured data root has incomplete rollout pairs")
+    if not stems:
+        pytest.fail("configured data manifest has no rollouts")
+    return [
+        load_rollout(real_data_root, stem, "test", config=config,
+                     device=device)
+        for stem in stems
+    ]
+
+
+@pytest.fixture(scope="session")
+def synthetic_golden():
+    with np.load(SYNTHETIC_GOLDEN, allow_pickle=False) as data:
+        return {key: data[key].copy() for key in data.files}
 
 
 @pytest.fixture(scope="session")

@@ -16,6 +16,7 @@ from estimation_calibration_cuda.covariance_calibration import (
 from estimation_calibration_cuda.invariant_ekf import run_rows, start_filter
 
 ROWS = 300
+pytestmark = pytest.mark.external_data
 
 
 def _dynamic_loss(roll, modules, P0_fixed, config):

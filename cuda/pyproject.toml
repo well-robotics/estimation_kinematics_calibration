@@ -37,6 +37,12 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+markers = [
+  "external_data: requires explicitly configured real rollout data",
+  "release_cuda: mandatory CUDA release coverage"
+]
+
 [tool.uv]
 conflicts = [
   [
