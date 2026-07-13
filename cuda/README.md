@@ -1,95 +1,140 @@
 # Estimation Calibration CUDA
 
-Differentiable covariance calibration for a contact-aided right-invariant EKF.
-The estimator replay is a recurrent computation graph; the learned parameters
-are float64 SPD covariance blocks, trained through chunked BPTT.
-The full notebook run trains 1,469,080 supervised BPTT time steps in 228.4 s.
+A compact Torch package for split-safe covariance calibration of a contact-aided invariant EKF.
 
-## Lineage
+## Install
 
-This implementation follows the computation-graph view of
-[Backprop KF](https://dl.acm.org/doi/10.5555/3157382.3157587) and the legged
-robot contact-aided InEKF setting of
-[Lin et al., CoRL/PMLR 2022](https://proceedings.mlr.press/v164/lin22b.html).
-This release does not include a learned contact-event network; contact
-schedules come from provided features, and the learned parameters are
-covariance blocks.
-
-## Approach
-
-The estimator replay is an unrolled differentiable program: gradients pass
-through propagation, correction, covariance updates, and any future learned
-block. The same mechanism would support, for example, an observation-conditioned
-contact/stick/slip covariance model inside the filter.
-
-The dynamic InEKF stays as the oracle. The training path uses eight fixed
-contact slots plus masks, preserving the math while making the hot path
-batch-first, static-shape, and capturable.
-
-The first full-training reference was direct autograd/eager dynamic replay,
-which took about 82 min for 20 epochs. CUDA graph capture removes CPU launch
-overhead by replaying each 300-row forward+backward chunk as one graph; without
-it, even fixed-slot eager remained launch-bound at roughly 5.76 ms/step and
-769 kernels/row.
-
-The block/gather rewrite uses the block-sparse/symmetric InEKF structure in
-propagate, insert, and correct, replacing dense zero-fill, slice-assign,
-copy/scatter, and blockdiag assembly. Dense pre-refactor code is kept in tests
-as the value/gradient oracle.
-
-The compiled-step path captures `torch.compile(step, fullgraph=True)` inside
-the manual whole-chunk CUDA graph, so Inductor/Triton fuses the remaining
-elementwise kernels while the outer graph keeps one launch per chunk.
-
-#### Example Results
-
-RTX 5090 Laptop GPU, CUDA float64, B=7, 300 rows/chunk, fwd+bwd, median of 5:
-
-| path | ms/step | rows/s | kernels/row |
-|---|---:|---:|---:|
-| fixed-slot eager | 5.761 | 1,215 | 768.7 |
-| +CUDA graph baseline | 1.428 | 4,901 | 782.8 |
-| +block/gather rewrite | 1.333 | 5,250 | 607.1 |
-| +compiled step in graph | 0.799 | 8,760 | 185.7 |
-
-| item | value |
-|---|---:|
-| rollouts | 7 |
-| rows/epoch | 73,454 |
-| epochs | 20 |
-| supervised BPTT time steps | 1,469,080 |
-| training wall-clock | 228.4 s |
-| effective throughput | 6,433 steps/s |
-| selected epoch | 11 |
-| aggregate vB RMSE | 1.939752 -> 1.732404 |
-
-See
-[`notebooks/covariance_calibration_run.ipynb`](notebooks/covariance_calibration_run.ipynb)
-for the run output.
-
-## Commands
-
-Replace the Python executable and dataset root with your own CUDA-enabled
-environment and local `datasets_v0` path.
+Python 3.10–3.14 and Torch 2.11 or newer are required.
+Install the Torch build appropriate for your CPU or CUDA environment first,
+then install this subproject:
 
 ```bash
-PYTHONPATH=src /path/to/your/cuda/python \
-  -m estimation_calibration_cuda.covariance_calibration train \
-  --data-root /path/to/datasets_v0 \
-  --outputs runs/covariance_calibration_cuda_graph_compile \
-  --epochs 20 \
-  --compile cuda-graph-compile
+python -m pip install .
 ```
+
+## Quick start
+
+The installed package contains a small train/validation/test dataset named
+`example`. It runs without a checkout or external data.
 
 ```bash
-PYTHONPATH=src /path/to/your/cuda/python -m pytest tests/
-
-PYTHONPATH=src /path/to/your/cuda/python \
-  benchmarks/profile_replay.py --impl fixed --batch 7 --rows 300 --chunks 10 \
-  --with-grad --compile cuda-graph-compile --trace --repeat 5 \
-  --data-root /path/to/datasets_v0
+estimation-calibration-cuda train example -o run \
+  --device cpu --compile none --epochs 2 --chunk 32
+estimation-calibration-cuda evaluate example --checkpoint run/checkpoint.pt \
+  --device cpu
+estimation-calibration-cuda inspect run
 ```
 
-`notebooks/covariance_tuning_tutorial.ipynb` is the small SO(3) computation
-graph analogue; `notebooks/covariance_calibration_run.ipynb` is the full CUDA
-calibration run.
+A run contains exactly four files:
+
+| file | purpose |
+|---|---|
+| `checkpoint.pt` | current training state and validation-selected state |
+| `covariances.npz` | validation-selected covariance matrices |
+| `metrics.json` | train/validation history and optional one-time test result |
+| `manifest.json` | schema, execution facts, and hashes of the other files |
+
+## Python API
+
+The public API has six names:
+
+```python
+from estimation_calibration_cuda import (
+    CalibrationConfig,
+    CalibrationEpisode,
+    CalibrationResult,
+    calibrate,
+    evaluate,
+    load_dataset,
+)
+
+dataset = load_dataset("example")
+config = CalibrationConfig(
+    device="cpu", compile_mode="none", epochs=2, chunk=32
+)
+result = calibrate(dataset, config, output_dir="run")
+test_metrics = evaluate(
+    dataset, checkpoint="run/checkpoint.pt", split="test", device="cpu"
+)
+```
+
+Training uses only `train` episodes. Validation body-velocity RMSE selects the
+saved covariance state. Test arrays are opened only by the explicit
+`evaluate` call, and a run accepts that write once.
+
+## Dataset format
+
+`load_dataset(PATH)` expects `PATH/dataset_manifest.json` and one NPZ per
+episode. The manifest schema is:
+
+```json
+{
+  "schema_version": "estimation-calibration-dataset-v1",
+  "episodes": [
+    {
+      "name": "walk-01",
+      "split": "train",
+      "source_id": "recording-01",
+      "file": "walk-01.npz",
+      "sha256": "64-lowercase-hex-characters"
+    }
+  ]
+}
+```
+
+Each NPZ contains:
+
+| key | shape | dtype |
+|---|---|---|
+| `time_s` | `[T]` | float32/float64 |
+| `imu` | `[T,6]` | float32/float64 |
+| `p_BC` | `[T,N,3]` | float32/float64 |
+| `contact_flags` | `[T,N]` | bool |
+| `gt_R_WB` | `[T,3,3]` | float32/float64 |
+| `gt_v_W` | `[T,3]` | float32/float64 |
+| `gt_p_W` | `[T,3]` | float32/float64 |
+| `row_valid` | `[T]` | optional bool |
+
+Candidate count `N` must be between one and eight. Timestamps must be finite,
+strictly increasing, and near-uniform. If present, true `row_valid` rows must
+be one contiguous interval; split an episode instead of placing a hole in the
+mask. Files, stems, hashes, and recording lineage are checked across splits
+before replay starts.
+
+## Resume
+
+Resume only occurs at an epoch boundary. `epochs` is the new total target:
+
+```bash
+estimation-calibration-cuda train example -o resume-run \
+  --device cpu --compile none --epochs 2 --chunk 32
+estimation-calibration-cuda train example -o resume-run \
+  --device cpu --compile none --epochs 4 --chunk 32 --resume
+```
+
+Dataset identity and every value except the epoch target must match; CUDA graphs are recreated.
+
+The dynamic and fixed-slot replays accept optional `contact_process_covariance`.
+Binary flags still control propagation, correction, insertion, and removal.
+
+## Benchmark
+
+Use an external paired dataset and write fresh local evidence:
+
+```bash
+python benchmarks/profile_replay.py --impl fixed --batch 7 --rows 300 \
+  --chunks 10 --repeat 5 --with-grad --compile cuda-graph-compile \
+  --data-root DATASET --out benchmark-output
+```
+
+## Limits
+
+- Numeric replay and calibration use float64.
+- Public episodes support at most eight candidates and pad once at batching.
+- Contact schedules are explicit binary inputs; this package does not infer them.
+- CPU supports eager and default compile modes; CUDA is required for graph modes.
+- Calibration quality depends on dataset coverage and is not asserted by software gates.
+
+## License
+
+The MIT license in `cuda/LICENSE` applies to this `cuda/` subproject only.

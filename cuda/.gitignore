@@ -5,3 +5,5 @@ __pycache__/
 .ipynb_checkpoints/
 runs/
 docs/*.local.md
+build/
+dist/

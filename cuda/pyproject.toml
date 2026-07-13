@@ -1,31 +1,30 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "estimation-calibration-cuda"
-version = "0.1.0"
-description = "CUDA PyTorch estimation covariance calibration for contact-aided invariant EKF replay."
+version = "0.2.0"
+description = "Torch CPU/CUDA covariance calibration for contact-aided invariant EKF replay."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10,<3.15"
 dependencies = [
   "numpy>=1.24",
-  "matplotlib>=3.7"
+  "torch>=2.11.0"
 ]
 
 [project.optional-dependencies]
-cpu = [
-  "torch>=2.11.0"
-]
-cu130 = [
-  "torch>=2.11.0"
-]
 notebooks = [
   "ipykernel>=6",
-  "jupyterlab>=4"
+  "jupyterlab>=4",
+  "matplotlib>=3.7"
 ]
 dev = [
-  "pytest>=8"
+  "build>=1",
+  "pytest>=8",
+  "twine>=6"
 ]
 
 [project.scripts]
@@ -37,32 +36,11 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+estimation_calibration_cuda = ["_example_data/*.json", "_example_data/*.npz"]
+
 [tool.pytest.ini_options]
 markers = [
   "external_data: requires explicitly configured real rollout data",
   "release_cuda: mandatory CUDA release coverage"
 ]
-
-[tool.uv]
-conflicts = [
-  [
-    { extra = "cpu" },
-    { extra = "cu130" }
-  ]
-]
-
-[tool.uv.sources]
-torch = [
-  { index = "pytorch-cpu", extra = "cpu" },
-  { index = "pytorch-cu130", extra = "cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true

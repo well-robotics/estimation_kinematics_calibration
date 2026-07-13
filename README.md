@@ -12,7 +12,7 @@ The paper calibrates process covariance, measurement covariance, foot-tip offset
 .
 ├── README.md
 ├── pyproject.toml
-├── cuda/                 # Torch/CUDA covariance-tuning update
+├── cuda/                 # installable Torch CPU/CUDA calibration package
 └── src/
     ├── matlab/           # planar MATLAB reference implementation
     └── python/
@@ -24,4 +24,4 @@ The paper calibrates process covariance, measurement covariance, foot-tip offset
 
 - `src/python` — paper-aligned Python implementation: CasADi/Fatrop full-information estimator, KKT sensitivities, Frank-Wolfe updates. See [`src/python/README.md`](src/python/README.md).
 - `src/matlab` — compact planar 2-D reference implementation of the same estimator-in-the-loop calibration. See [`src/matlab/README.md`](src/matlab/README.md).
-- `cuda` — Torch/CUDA covariance-tuning update: differentiable contact-aided right-invariant InEKF replay, trained with truncated BPTT and gradient computation in Torch instead of symbolic KKT differentiation. See [`cuda/README.md`](cuda/README.md).
+- `cuda` — split-safe Torch covariance calibration with CPU examples and CUDA acceleration. See [`cuda/README.md`](cuda/README.md).
