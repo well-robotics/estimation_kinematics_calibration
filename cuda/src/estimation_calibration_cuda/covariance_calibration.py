@@ -80,9 +80,10 @@ class CalibrationConfig:
     fallback_lr: float = 3e-3
     bias_lr_factor: float = 1.0 / 30.0
     dtype: torch.dtype = torch.float64
-    require_cuda: bool = True
+    device: str = "auto"
+    require_cuda: bool = False
     exec_mode: str = "batched"
-    compile_mode: str | None = None
+    compile_mode: str | None = "auto"
     profile_stages: bool = False
     seed: int = 0
 
@@ -115,6 +116,9 @@ class TrainingResult:
     runtime_s: float
     lr: float
     final_state_dict: dict
+    effective_compile_mode: str
+    fallback_reason_code: str | None
+    next_epoch: int
 
 # -----------------------------------------------------------------------------
 # environment helpers
@@ -156,6 +160,24 @@ def seed_everything(seed: int, device: torch.device) -> None:
     if device.type == "cuda":
         with torch.cuda.device(device):
             torch.cuda.manual_seed_all(seed)
+
+
+def capture_rng_state(device: torch.device) -> dict:
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": (torch.cuda.get_rng_state_all()
+                       if device.type == "cuda" else None),
+    }
+
+
+def restore_rng_state(state: dict, device: torch.device) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch_cpu"])
+    if device.type == "cuda":
+        torch.cuda.set_rng_state_all(state["torch_cuda"])
 
 
 def _peak_memory_gb(device: torch.device) -> float:
@@ -667,10 +689,13 @@ def train_trimmed_rollouts(
     config: CalibrationConfig,
     device: torch.device,
     validation_callback: Callable[[torch.nn.ModuleDict, int], dict] | None = None,
+    resume_state: dict | None = None,
+    epoch_callback: Callable[[dict], None] | None = None,
 ) -> TrainingResult:
     validate_training_splits(train_order, train_rollouts,
                              validation_order, validation_rollouts)
-    seed_everything(config.seed, device)
+    if resume_state is None:
+        seed_everything(config.seed, device)
     modules = make_cov_modules(device=device, dtype=config.dtype)
     params = list(modules.parameters())
     optimizer = torch.optim.Adam(
@@ -679,16 +704,26 @@ def train_trimmed_rollouts(
         eps=1e-8,
     )
     P0_fixed = fixed_initial_covariance(device, config.dtype)
-    history: list[dict] = []
-    chunk_trace: list[float] = []
-    best = {
-        "validation_body_velocity_rmse_mps": float("inf"),
-        "epoch": -1,
-        "state": None,
-    }
+    if resume_state is None:
+        start_epoch = 0
+        history: list[dict] = []
+        chunk_trace: list[float] = []
+        best = {
+            "validation_body_velocity_rmse_mps": float("inf"),
+            "epoch": -1,
+            "state": None,
+        }
+    else:
+        modules.load_state_dict(resume_state["current_state_dict"])
+        optimizer.load_state_dict(resume_state["optimizer_state_dict"])
+        start_epoch = int(resume_state["next_epoch"])
+        history = copy.deepcopy(resume_state["history"])
+        chunk_trace = list(resume_state["chunk_trace"])
+        best = copy.deepcopy(resume_state["best"])
+        restore_rng_state(resume_state["rng_state"], device)
     total_train_rows = sum(r.trim1 - r.trim0 - 1 for r in train_rollouts.values())
     t_train = time.time()
-    for epoch in range(config.epochs):
+    for epoch in range(start_epoch, config.epochs):
         _reset_peak_memory(device)
         t_epoch = time.time()
         body_losses: list[float] = []
@@ -790,6 +825,18 @@ def train_trimmed_rollouts(
             f"| {rec['epoch_s']:.0f}s ({rec['rows_per_s']:.0f} rows/s) "
             f"| peak {rec['peak_gb']:.2f} GB"
         )
+        if epoch_callback is not None:
+            epoch_callback({
+                "current_state_dict": modules.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "next_epoch": epoch + 1,
+                "history": history,
+                "chunk_trace": chunk_trace,
+                "best": best,
+                "rng_state": capture_rng_state(device),
+                "effective_compile_mode": "none",
+                "fallback_reason_code": None,
+            })
     final_state = copy.deepcopy(modules.state_dict())
     modules.load_state_dict(best["state"])
     return TrainingResult(
@@ -801,6 +848,9 @@ def train_trimmed_rollouts(
         runtime_s=time.time() - t_train,
         lr=config.lr,
         final_state_dict=final_state,
+        effective_compile_mode="none",
+        fallback_reason_code=None,
+        next_epoch=config.epochs,
     )
 
 # -----------------------------------------------------------------------------
@@ -1105,32 +1155,8 @@ def _cmd_train(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(required=True)
-    summarize = sub.add_parser("summarize", help="summarize an output directory")
-    summarize.add_argument("--outputs", default="runs/covariance_calibration")
-    summarize.set_defaults(func=_cmd_summarize)
-    train = sub.add_parser("train", help="run covariance calibration")
-    train.add_argument("--data-root", required=True, help="path to data/datasets_v0")
-    train.add_argument("--outputs", default="runs/covariance_calibration")
-    train.add_argument("--epochs", type=int, default=20)
-    train.add_argument("--chunk", type=int, default=300)
-    train.add_argument("--lr", type=float, default=1e-2)
-    train.add_argument("--exec", dest="exec_mode", default="batched",
-                       choices=["batched", "sequential"],
-                       help="batched fixed-slot filter (fast) or the original "
-                            "per-rollout dynamic-dimension loop")
-    train.add_argument("--compile", dest="compile_mode", default="cuda-graph",
-                       choices=["none", "default", "reduce-overhead",
-                                "max-autotune", "cuda-graph",
-                                "cuda-graph-compile"],
-                       help="step execution for the batched path; cuda-graph "
-                            "captures each whole chunk fwd+bwd; "
-                            "cuda-graph-compile additionally captures the "
-                            "inductor-compiled step (fastest)")
-    train.set_defaults(func=_cmd_train)
-    args = parser.parse_args(argv)
-    args.func(args)
+    from .cli import main as cli_main
+    cli_main(argv)
 
 
 if __name__ == "__main__":

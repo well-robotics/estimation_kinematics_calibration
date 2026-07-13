@@ -21,7 +21,8 @@ from estimation_calibration_cuda.data import _episode_to_rollout, load_dataset
 def _example_rollouts(split: str):
     episodes = load_dataset("example").load(split)
     rollouts = {
-        episode.name: _episode_to_rollout(episode, device=torch.device("cpu"))
+        episode.name: _episode_to_rollout(
+            episode, device=torch.device("cpu"), trim_s=1.0)
         for episode in episodes
     }
     return list(rollouts), rollouts
@@ -29,7 +30,7 @@ def _example_rollouts(split: str):
 
 def _config(epochs=1):
     return CalibrationConfig(
-        trim_s=0.0,
+        trim_s=1.0,
         epochs=epochs,
         chunk=32,
         require_cuda=False,

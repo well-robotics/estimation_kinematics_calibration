@@ -29,7 +29,7 @@ dev = [
 ]
 
 [project.scripts]
-estimation-calibration-cuda = "estimation_calibration_cuda.covariance_calibration:main"
+estimation-calibration-cuda = "estimation_calibration_cuda.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

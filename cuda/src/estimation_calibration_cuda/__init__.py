@@ -1,3 +1,14 @@
 """CUDA/Torch covariance calibration utilities."""
 
-__all__: list[str] = []
+from .api import CalibrationResult, calibrate, evaluate
+from .covariance_calibration import CalibrationConfig
+from .data import CalibrationEpisode, load_dataset
+
+__all__ = [
+    "CalibrationConfig",
+    "CalibrationEpisode",
+    "CalibrationResult",
+    "load_dataset",
+    "calibrate",
+    "evaluate",
+]

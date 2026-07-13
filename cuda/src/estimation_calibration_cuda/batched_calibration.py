@@ -29,9 +29,11 @@ from .covariance_calibration import (
     _reset_peak_memory,
     aggregate_metrics,
     build_covs,
+    capture_rng_state,
     covariance_regularization,
     fixed_initial_covariance,
     make_cov_modules,
+    restore_rng_state,
     seed_everything,
     seed_state,
     trajectory_metrics,
@@ -251,16 +253,36 @@ def train_batched(
     config: CalibrationConfig,
     device: torch.device,
     validation_callback: Callable[[torch.nn.ModuleDict, int], dict] | None = None,
+    resume_state: dict | None = None,
+    epoch_callback: Callable[[dict], None] | None = None,
 ) -> TrainingResult:
     validate_training_splits(train_order, train_rollouts,
                              validation_order, validation_rollouts)
-    seed_everything(config.seed, device)
+    if resume_state is None:
+        seed_everything(config.seed, device)
     modules = make_cov_modules(device=device, dtype=config.dtype)
     params = list(modules.parameters())
     optimizer = torch.optim.Adam(
         modules.param_groups(config.lr, config.bias_lr_factor),
         betas=(0.9, 0.999), eps=1e-8,
     )
+    if resume_state is None:
+        start_epoch = 0
+        history: list[dict] = []
+        chunk_trace: list[float] = []
+        best = {
+            "validation_body_velocity_rmse_mps": float("inf"),
+            "epoch": -1,
+            "state": None,
+        }
+    else:
+        modules.load_state_dict(resume_state["current_state_dict"])
+        optimizer.load_state_dict(resume_state["optimizer_state_dict"])
+        start_epoch = int(resume_state["next_epoch"])
+        history = copy.deepcopy(resume_state["history"])
+        chunk_trace = list(resume_state["chunk_trace"])
+        best = copy.deepcopy(resume_state["best"])
+        restore_rng_state(resume_state["rng_state"], device)
     P0_fixed = fixed_initial_covariance(device, config.dtype)
     batch = _make_batch(train_order, train_rollouts, chunk=config.chunk,
                         dtype=config.dtype)
@@ -268,6 +290,11 @@ def train_batched(
                            for r in train_rollouts.values())
     use_graph = (device.type == "cuda" and config.compile_mode in
                  ("cuda-graph", "cuda-graph-compile"))
+    effective_compile_mode = (resume_state.get("effective_compile_mode")
+                              if resume_state is not None
+                              else config.compile_mode or "none")
+    fallback_reason_code = (resume_state.get("fallback_reason_code")
+                            if resume_state is not None else None)
     step_fn = None
     if use_graph:
         with torch.no_grad():
@@ -283,22 +310,17 @@ def train_batched(
         except RuntimeError:
             print("cuda-graph capture failed; falling back to eager")
             use_graph = False
+            effective_compile_mode = "none"
+            fallback_reason_code = "cuda_graph_capture_failed"
     if not use_graph:
         step_fn = fsi.make_compiled_step(
             None if config.compile_mode in ("cuda-graph", "cuda-graph-compile",
                                             None)
             else config.compile_mode)
 
-    history: list[dict] = []
-    chunk_trace: list[float] = []
-    best = {
-        "validation_body_velocity_rmse_mps": float("inf"),
-        "epoch": -1,
-        "state": None,
-    }
     timer = _StageTimer(config.profile_stages and device.type == "cuda")
     t_train = time.time()
-    for epoch in range(config.epochs):
+    for epoch in range(start_epoch, config.epochs):
         _reset_peak_memory(device)
         t_epoch = time.time()
         # GPU-accumulated diagnostics; a single sync at epoch end
@@ -434,6 +456,18 @@ def train_batched(
             f"| {rec['epoch_s']:.0f}s ({rec['rows_per_s']:.0f} rows/s) "
             f"| peak {rec['peak_gb']:.2f} GB"
         )
+        if epoch_callback is not None:
+            epoch_callback({
+                "current_state_dict": modules.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "next_epoch": epoch + 1,
+                "history": history,
+                "chunk_trace": chunk_trace,
+                "best": best,
+                "rng_state": capture_rng_state(device),
+                "effective_compile_mode": effective_compile_mode,
+                "fallback_reason_code": fallback_reason_code,
+            })
     final_state = copy.deepcopy(modules.state_dict())
     modules.load_state_dict(best["state"])
     return TrainingResult(
@@ -445,6 +479,9 @@ def train_batched(
         runtime_s=time.time() - t_train,
         lr=config.lr,
         final_state_dict=final_state,
+        effective_compile_mode=effective_compile_mode,
+        fallback_reason_code=fallback_reason_code,
+        next_epoch=config.epochs,
     )
 
 
