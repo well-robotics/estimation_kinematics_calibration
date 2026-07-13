@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import tomllib
 from pathlib import Path
 
 
@@ -11,14 +10,15 @@ CUDA_ROOT = Path(__file__).parents[1]
 
 
 def test_package_metadata_and_license_agree():
-    metadata = tomllib.loads((CUDA_ROOT / "pyproject.toml").read_text())
-    project = metadata["project"]
-    assert project["version"] == "0.2.0"
-    assert project["license"] == "MIT"
-    assert project["license-files"] == ["LICENSE"]
-    assert "torch>=2.11.0" in project["dependencies"]
-    assert not any("matplotlib" in item for item in project["dependencies"])
-    assert metadata["build-system"]["requires"][0] == "setuptools>=77"
+    metadata = (CUDA_ROOT / "pyproject.toml").read_text()
+    build, project = metadata.split("[project]", maxsplit=1)
+    project = project.split("[project.optional-dependencies]", maxsplit=1)[0]
+    assert 'requires = ["setuptools>=77", "wheel"]' in build
+    assert 'version = "0.2.0"' in project
+    assert 'license = "MIT"' in project
+    assert 'license-files = ["LICENSE"]' in project
+    assert '"torch>=2.11.0"' in project
+    assert "matplotlib" not in project
     assert (CUDA_ROOT / "LICENSE").read_text().startswith("MIT License\n")
 
 
