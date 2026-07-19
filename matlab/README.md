@@ -1,37 +1,34 @@
-# MATLAB
+# MATLAB implementation
 
-This implementation combines a stage-structured Fatrop full-information
-estimator with an adjoint KKT gradient. SQP--BFGS, Frank--Wolfe, and projected
-Adam are provided as interchangeable upper-level updates. The included MAT
-file contains the trajectory and precomputed kinematic quantities required by
-the example.
+A stage-structured Fatrop full-information estimator with an adjoint KKT
+gradient. SQP--BFGS, Frank--Wolfe, and projected Adam share the same covariance
+and kinematic calibration problem.
 
-<p align="center">
-  <img src="assets/fig4_upper_level.svg" width="68%" alt="Upper-level loss convergence">
-</p>
-<p align="center"><sub>Upper-level loss convergence for the fast and contact-aware FIEs; see the <a href="../prime/">PRIME implementation</a>.</sub></p>
+The example signals and precomputed kinematics use
+[well-robotics/STRIDE](https://github.com/well-robotics/STRIDE/tree/main); see
+the [STRIDE paper (arXiv:2407.02648)](https://arxiv.org/abs/2407.02648).
 
-<p align="center">
-  <img src="assets/fig5_stride.svg" width="76%" alt="Joint covariance and kinematic calibration">
-</p>
-<p align="center"><sub>Joint covariance and kinematic calibration on STRIDE.</sub></p>
+## Contents
+
+| Path | Responsibility |
+|---|---|
+| [`+legbical/`](+legbical/README.md) | Calibration, estimator, KKT, and configuration package |
+| [`assets/`](assets/) | Paper figures generated from the experiments |
+| [`data/`](data/) | STRIDE signals and precomputed kinematic quantities |
+| [`run_calibration.m`](run_calibration.m) | Public calibration entry point |
+| [`setup.m`](setup.m) | Local MATLAB and CasADi path setup |
 
 ## Run
 
-MATLAB, Optimization Toolbox, and a CasADi build with Fatrop are required. If
-CasADi is not already on the MATLAB path, set `CASADI_MATLAB_PATH`.
+MATLAB, Optimization Toolbox, and a CasADi build with Fatrop are required. Set
+`CASADI_MATLAB_PATH` when CasADi is not already on the MATLAB path.
 
 ```matlab
 cd matlab
-result = run_calibration(Method="sqp", Horizon="demo");
+calibration = run_calibration(Method="sqp", Horizon="demo");
 ```
 
 `Method` also accepts `"frank-wolfe"` and `"adam"`; `Horizon="full"` uses the
 complete stored trajectory.
 
-## Test
-
-```matlab
-addpath('tests');
-test_fast_fie
-```
+Return to the [repository overview](../README.md).

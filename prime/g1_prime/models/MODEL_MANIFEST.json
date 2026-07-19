@@ -1,0 +1,20 @@
+{
+  "profiles": {
+    "g1": {
+      "contact_frames": {
+        "path": "g1/contact_frames.json",
+        "sha256": "3859108a3643d72a988bae790655c640bcdb8a869505a5663ad7477bbdac1a66"
+      },
+      "description": "Unitree G1 29-DoF description aligned with the MuJoCo ground-truth generator: Pinocchio URDF mass 33.34014202 kg, MuJoCo MJCF mass 33.341142 kg; eight audited foot corner contact frames.",
+      "mjcf": {
+        "path": "g1/mjcf/g1.xml",
+        "sha256": "8c3eedf5c2052915715ba793f274cf8e08b914a869234c01ab3a510f25cd1ca3"
+      },
+      "urdf": {
+        "path": "g1/urdf/g1_custom_collision_29dof.urdf",
+        "sha256": "c826e550570dc572c3e486286ed269f192c52acda7446367c9fe3514a0edc143"
+      }
+    }
+  },
+  "schema": "g1cal_model_profiles_v1"
+}

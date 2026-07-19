@@ -1,0 +1,19 @@
+name: g1cal
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pinocchio>=3.2
+  - libboost-devel
+  - eigen
+  - pybind11
+  - cmake>=3.16
+  - ninja
+  - cxx-compiler
+  - numpy
+  - scipy
+  - cvxpy
+  - scs
+  - pytest
+  - git-lfs
+  - pip

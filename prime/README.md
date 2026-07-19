@@ -1,17 +1,13 @@
-# PRIME
+# PRIME implementations
 
-Contact-aware full-information calibration based on PRIME and Crocoddyl FDDP.
-The upper-level gradient is obtained from the block-banded optimality system;
-SQP--BFGS, Frank--Wolfe, and projected Adam use the same lower-level estimate.
+Contact-aware full-information estimation and covariance calibration built on
+[PRIME](https://github.com/well-robotics/PRIME) and Crocoddyl FDDP.
 
-## Run
+## Implementations
 
-```bash
-conda env create -f environment.yml
-conda activate stride-prime
-./build.sh
-python run_calibration.py --method sqp
-```
+| Directory | Scope |
+|---|---|
+| [`g1_prime/`](g1_prime/README.md) | Unitree G1 two-clip covariance calibration |
+| [`stride_prime/`](stride_prime/README.md) | Planar STRIDE covariance and shin-geometry calibration |
 
-The example uses `../matlab/data/stride_demo.mat`. The other upper-level
-methods are selected with `--method frank-wolfe` and `--method adam`.
+Return to the [repository overview](../README.md).
